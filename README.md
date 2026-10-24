@@ -4,7 +4,7 @@ BandMIP is a C++20 local-search solver for mixed-integer programming (MIP). This
 
 ## Build
 
-Requirements: CMake ≥ 3.15 and a C++20-capable GCC or Clang (MSVC is not supported).
+Requirements: CMake ≥ 3.15 and a C++20-capable GCC or Clang.
 
 ```bash
 mkdir build

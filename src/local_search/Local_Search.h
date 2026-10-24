@@ -1,0 +1,669 @@
+/*=====================================================================================
+
+    Filename:     Local_Search.h
+
+    Description:
+        Version:  2.0
+
+    Author:       Peng Lin, peng.lin.csor@gmail.com
+
+    Organization: Shaowei Cai Group
+
+=====================================================================================*/
+
+#pragma once
+#include "../model_data/Model_Con.h"
+#include "../model_data/Model_Manager.h"
+#include "../model_data/Model_Var.h"
+#include "../utils/global_defs.h"
+#include "../utils/solver_error.h"
+#include "context/context.h"
+#include "incumbent_trace.h"
+#include "neighbor/neighbor.h"
+#include "restart/restart.h"
+#include "scoring/scoring.h"
+#include "start/start.h"
+#include "weight/weight.h"
+#include <algorithm>
+#include <atomic>
+#include <cassert>
+#include <chrono>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <functional>
+#include <limits>
+#include <random>
+#include <string>
+#include <unordered_set>
+#include <utility>
+#include <vector>
+
+class Local_Search
+{
+private:
+  const Model_Manager* m_model_manager;
+
+  const std::vector<bool>& m_con_is_equality;
+
+  const std::vector<double>& m_var_obj_cost;
+
+  std::vector<double> m_var_current_value;
+
+  std::vector<double> m_var_best_value;
+
+  std::vector<size_t> m_var_allow_inc_step;
+
+  std::vector<size_t> m_var_allow_dec_step;
+
+  std::vector<size_t> m_var_last_inc_step;
+
+  std::vector<size_t> m_var_last_dec_step;
+
+  std::vector<double> m_var_LB_feas_delta;
+
+  std::vector<double> m_var_UB_feas_delta;
+
+  std::vector<double> m_var_lift_delta;
+
+  std::unordered_set<size_t> m_feas_touch_vars;
+
+  bool m_is_keep_feas;
+
+  bool m_strct_feas;
+
+  bool m_strict_feas;
+
+  bool m_break_eq_feas;
+
+  std::vector<double> m_op_var_deltas;
+
+  std::vector<size_t> m_op_var_idxs;
+
+  size_t m_op_size;
+
+  std::vector<uint32_t> m_binary_op_stamp;
+
+  uint32_t m_binary_op_stamp_token;
+
+  std::vector<size_t> m_con_weight;
+
+  std::vector<double> m_con_activity;
+
+  std::vector<double> m_con_constant;
+
+  std::vector<size_t> m_con_unsat_idxs;
+
+  std::vector<size_t> m_con_pos_in_unsat_idxs;
+
+  std::vector<size_t> m_con_sat_idxs;
+
+  std::vector<size_t> m_con_pos_in_sat_idxs;
+
+  std::vector<size_t> m_dirty_con_idxs;
+
+  std::vector<unsigned char> m_con_activity_is_dirty;
+
+  size_t m_activity_period;
+
+  size_t m_activity_hits;
+
+  bool m_activity_dirty;
+
+  bool m_use_exact_double_activity;
+
+  size_t m_cur_step;
+
+  std::mt19937 m_rng;
+
+  size_t m_tabu_base;
+
+  size_t m_tabu_variation;
+
+  bool m_is_found_feasible;
+
+  bool m_current_obj_breakthrough;
+
+  size_t m_last_improve_step;
+
+  size_t m_bms_unsat_con;
+
+  size_t m_bms_mtm_unsat_op;
+
+  size_t m_bms_sat_con;
+
+  size_t m_bms_mtm_sat_op;
+
+  size_t m_bms_flip_op;
+
+  size_t m_bms_easy_op;
+
+  size_t m_bms_random_op;
+
+  double m_best_obj;
+
+  Incumbent_Trace m_incumbent_trace;
+
+  std::atomic<double> m_logged_obj_value;
+
+  std::atomic<bool> m_terminated;
+
+  std::string m_sol_path;
+
+  size_t m_min_unsat_con;
+
+  size_t m_var_num;
+
+  size_t m_con_num;
+
+  size_t m_obj_var_num;
+
+  bool m_has_objective;
+
+  bool m_is_unbounded;
+
+  double m_best_lift_score;
+
+  long m_best_neighbor_score;
+
+  long m_best_neighbor_subscore;
+
+  size_t m_best_age;
+
+  // 约束平衡 bandit 的全局配置（论文 3.7）
+  double m_epsilon;
+
+  double m_ucb_c;
+
+  bool m_bandit_enabled;
+
+  std::string m_bandit_algorithm;
+
+  size_t m_best_var_idx;
+
+  double m_best_delta;
+
+  Readonly_Ctx m_readonly_ctx;
+
+  Start::Start_Ctx m_start_ctx;
+
+  Restart::Restart_Ctx m_restart_ctx;
+
+  Weight::Weight_Ctx m_weight_ctx;
+
+  Scoring::Lift_Ctx m_lift_ctx;
+
+  Scoring::Neighbor_Ctx m_scoring_ctx;
+
+  Neighbor::Neighbor_Ctx m_neighbor_ctx;
+
+  Start m_start;
+
+  Restart m_restart;
+
+  Weight m_weight;
+
+  Scoring m_scoring;
+
+  std::vector<Neighbor> m_explore_neighbor_list;
+
+  template <typename Activity>
+  inline bool con_sat(size_t p_con_idx, Activity p_activity) const;
+
+  inline void insert_unsat(size_t p_con_idx);
+
+  inline void delete_unsat(size_t p_con_idx);
+
+  inline void insert_sat(size_t p_con_idx);
+
+  inline void delete_sat(size_t p_con_idx);
+
+  inline bool tabu(size_t p_var_idx, double p_delta);
+
+  inline bool tabu_latest(size_t p_var_idx, double p_delta);
+
+  double lift_move_operation(size_t p_term_idx, size_t p_var_idx);
+
+  inline void update_best_solution();
+
+  inline void publish_best_obj();
+
+  void normalize_domain_values(std::vector<double>& p_values,
+                               const char* p_source) const;
+
+  bool verify_domain_values(const std::vector<double>& p_values) const;
+
+  bool verify_solution() const;
+
+  bool solve_objective_only();
+
+  template <typename Accumulator>
+  bool solve_objective_only_impl();
+
+  void init_state();
+
+  void refresh_activities();
+
+  void refresh_dirty_activities();
+
+  inline void mark_activity_dirty(size_t p_con_idx);
+
+  template <typename Accumulator>
+  void refresh_activities_impl();
+
+  template <typename Accumulator>
+  Accumulator compute_activity(const Model_Con& p_con,
+                               const double* p_var_values) const;
+
+  template <typename Accumulator, bool Track_Dirty>
+  void update_affected_activities(const Model_Var& p_model_var,
+                                  double p_delta);
+
+  bool can_use_exact_double_activity() const;
+
+  void configure_activity_arithmetic();
+
+  inline void reset_op(bool p_require_positive);
+
+  bool lift_move();
+
+  bool explore_neighbor(std::vector<Neighbor>& p_explore_neighbors);
+
+  void apply_move(size_t p_var_idx, double p_delta);
+
+   void reset_after_restart();
+
+  void init_data();
+
+  //------------------------------------------------------------------
+  // 论文 3.5：即时收益 reward_m(a) = (|violated(s-)| - |violated(s+)|) / |violated(s-)|
+  double calculate_reward(double p_pre_unsat, double p_cur_unsat) const;
+
+  // 论文 3.5：Value_m(a) <- (1-α)·Value_m(a) + α·reward_m(a)，
+  // 同时维护该模式下动作的奖励均值与方差（供论文 3.7 的方差机制使用）。
+  void update_q_table(double reward, size_t con_idx);
+
+  void update_reward(double PreUnSat);
+
+  // 论文 3.2：按当前解的违反量级在 AGR/FINE 两种模式间自动切换。
+  void update_state();
+
+  double checked_move_value(size_t p_var_idx,
+                            double p_delta,
+                            const char* p_source) const;
+
+  void apply_checked_move(size_t p_var_idx,
+                          double p_delta,
+                          const char* p_source);
+
+  //------------------------------------------------------------------
+public:
+  using Start_Cbk = Start::Start_Cbk;
+
+  using Restart_Cbk = Restart::Restart_Cbk;
+
+  using Weight_Cbk = Weight::Weight_Cbk;
+
+  using Lift_Scoring_Cbk = Scoring::Lift_Cbk;
+
+  using Neighbor_Scoring_Cbk = Scoring::Neighbor_Cbk;
+
+  using Neighbor_Cbk = Neighbor::Neighbor_Cbk;
+
+  Local_Search(const Model_Manager* p_model_manager,
+               double p_opt_tolerance = k_default_opt_tolerance);
+
+  ~Local_Search();
+
+  int run_search(const std::vector<double>& p_start_solution = {},
+                 const std::vector<char>& p_start_mask = {});
+
+  bool finalize_result();
+
+  void output_result() const;
+
+  void configure_incumbent_trace(bool p_enabled, double p_time_limit);
+
+  void start_incumbent_trace(
+      std::chrono::steady_clock::time_point p_start_time);
+
+  void finish_incumbent_trace();
+
+  void write_sol() const;
+
+  inline double get_obj_value() const;
+
+  inline bool is_feasible() const;
+
+  inline const std::vector<double>& get_solution() const;
+
+  void terminate();
+
+  void set_sol_path(const std::string& p_sol_path);
+
+  void set_random_seed(uint32_t p_seed);
+
+  void set_opt_tolerance(double p_value) noexcept;
+
+  void set_start_cbk(Start_Cbk p_start_cbk, void* p_user_data = nullptr);
+
+  void set_start_method(const std::string& p_start_name);
+
+  void set_restart_cbk(Restart_Cbk p_restart_cbk,
+                       void* p_user_data = nullptr);
+
+  void set_restart_method(const std::string& p_restart_name);
+
+  void set_restart_step(size_t p_restart_step);
+
+  void set_weight_cbk(Weight_Cbk p_weight_cbk,
+                      void* p_user_data = nullptr);
+
+  void set_weight_method(const std::string& p_method_name);
+
+  void set_weight_smooth_probability(size_t p_weight_smooth_prob);
+
+  void set_bandit_algorithm(const std::string& p_alg_name);
+
+  void set_epsilon(double p_epsilon);
+
+  void set_ucb_c(double p_ucb_c);
+
+  void enable_bandit(bool p_enable);
+
+  void set_lift_scoring_method(const std::string& p_method_name);
+
+  void set_neighbor_scoring_method(const std::string& p_method_name);
+
+  void set_lift_scoring_cbk(Lift_Scoring_Cbk p_cbk,
+                            void* p_user_data = nullptr);
+
+  void set_neighbor_scoring_cbk(Neighbor_Scoring_Cbk p_cbk,
+                                void* p_user_data = nullptr);
+
+  void set_bms_unsat_con(size_t p_value);
+
+  void set_bms_mtm_unsat_op(size_t p_value);
+
+  void set_bms_sat_con(size_t p_value);
+
+  void set_bms_mtm_sat_op(size_t p_value);
+
+  void set_bms_flip_op(size_t p_value);
+
+  void set_bms_easy_op(size_t p_value);
+
+  void set_bms_random_op(size_t p_value);
+
+  void clear_neighbor_list();
+
+  void add_neighbor(const std::string& p_neighbor_name,
+                    size_t p_bms_con,
+                    size_t p_bms_op);
+
+  void add_custom_neighbor(const std::string& p_neighbor_name,
+                           Neighbor_Cbk p_neighbor_cbk,
+                           void* p_user_data = nullptr);
+
+  void reset_default_neighbor_list();
+
+  void set_tabu_base(size_t p_value);
+
+  void set_activity_period(size_t p_value);
+
+  void set_tabu_variation(size_t p_value);
+
+  void set_break_eq_feas(bool p_break_eq_feas);
+};
+
+template <typename Activity>
+inline bool Local_Search::con_sat(size_t p_con_idx,
+                                  Activity p_activity) const
+{
+  const Activity gap =
+      p_activity - static_cast<Activity>(m_con_constant[p_con_idx]);
+  const Activity tolerance =
+      static_cast<Activity>(m_model_manager->feas_tolerance());
+  if (m_con_is_equality[p_con_idx])
+    return std::fabs(gap) <= tolerance;
+  return gap <= tolerance;
+}
+
+inline void Local_Search::insert_unsat(size_t p_con_idx)
+{
+  assert(m_con_pos_in_unsat_idxs[p_con_idx] == SIZE_MAX);
+  m_con_pos_in_unsat_idxs[p_con_idx] = m_con_unsat_idxs.size();
+  m_con_unsat_idxs.push_back(p_con_idx);
+}
+
+inline void Local_Search::delete_unsat(size_t p_con_idx)
+{
+  assert(m_con_pos_in_unsat_idxs[p_con_idx] != SIZE_MAX);
+  size_t pos = m_con_pos_in_unsat_idxs[p_con_idx];
+  size_t last_con_idx = m_con_unsat_idxs.back();
+  m_con_unsat_idxs[pos] = last_con_idx;
+  m_con_pos_in_unsat_idxs[last_con_idx] = pos;
+  m_con_unsat_idxs.pop_back();
+  m_con_pos_in_unsat_idxs[p_con_idx] = SIZE_MAX;
+}
+
+inline void Local_Search::insert_sat(size_t p_con_idx)
+{
+  assert(m_con_pos_in_sat_idxs[p_con_idx] == SIZE_MAX);
+  m_con_pos_in_sat_idxs[p_con_idx] = m_con_sat_idxs.size();
+  m_con_sat_idxs.push_back(p_con_idx);
+}
+
+inline void Local_Search::delete_sat(size_t p_con_idx)
+{
+  assert(m_con_pos_in_sat_idxs[p_con_idx] != SIZE_MAX);
+  size_t pos = m_con_pos_in_sat_idxs[p_con_idx];
+  size_t last_con_idx = m_con_sat_idxs.back();
+  m_con_sat_idxs[pos] = last_con_idx;
+  m_con_pos_in_sat_idxs[last_con_idx] = pos;
+  m_con_sat_idxs.pop_back();
+  m_con_pos_in_sat_idxs[p_con_idx] = SIZE_MAX;
+}
+
+inline void Local_Search::mark_activity_dirty(size_t p_con_idx)
+{
+  if (m_con_activity_is_dirty[p_con_idx])
+    return;
+  m_con_activity_is_dirty[p_con_idx] = 1;
+  m_dirty_con_idxs.push_back(p_con_idx);
+  m_activity_dirty = true;
+}
+
+inline void Local_Search::update_best_solution()
+{
+  assert(m_var_best_value.size() == m_var_num);
+  assert(m_var_current_value.size() == m_var_num);
+  m_last_improve_step = m_cur_step;
+  memcpy(m_var_best_value.data(),
+         m_var_current_value.data(),
+         m_var_num * sizeof(double));
+  m_best_obj = m_con_activity[0];
+  m_con_constant[0] = m_best_obj - m_readonly_ctx.m_opt_tolerance;
+  m_current_obj_breakthrough = false;
+  publish_best_obj();
+}
+
+inline void Local_Search::publish_best_obj()
+{
+  const double objective = m_model_manager->is_min() *
+                           (m_best_obj + m_model_manager->obj_offset());
+  m_logged_obj_value.store(objective, std::memory_order_relaxed);
+  m_incumbent_trace.record(objective);
+}
+
+inline double Local_Search::get_obj_value() const
+{
+  return m_logged_obj_value.load(std::memory_order_relaxed);
+}
+
+inline bool Local_Search::is_feasible() const
+{
+  return m_is_found_feasible;
+}
+
+inline const std::vector<double>& Local_Search::get_solution() const
+{
+  return m_var_best_value;
+}
+
+inline void Local_Search::reset_op(bool p_require_positive)
+{
+  ++m_binary_op_stamp_token;
+  if (m_binary_op_stamp_token == 0)
+  {
+    std::fill(m_binary_op_stamp.begin(), m_binary_op_stamp.end(), 0);
+    m_binary_op_stamp_token = 1;
+  }
+  m_best_lift_score =
+      p_require_positive ? 0 : std::numeric_limits<double>::lowest();
+  m_best_neighbor_score =
+      p_require_positive ? 0 : std::numeric_limits<long>::min();
+  m_best_neighbor_subscore = std::numeric_limits<long>::min();
+  m_best_var_idx = SIZE_MAX;
+  m_best_delta = 0;
+  m_best_age = SIZE_MAX;
+}
+
+inline bool
+Local_Search::explore_neighbor(std::vector<Neighbor>& p_explore_neighbors)
+{
+  assert(!p_explore_neighbors.empty());
+  bool validate_selected_move = m_scoring.has_neighbor_callback();
+  reset_op(true);
+  for (auto& neighbor : p_explore_neighbors)
+  {
+    m_neighbor_ctx.clear_ops();
+    if (&neighbor == &p_explore_neighbors.back())
+    {
+      reset_op(false);
+      m_weight.update(m_weight_ctx);
+    }
+    neighbor.explore(m_neighbor_ctx);
+    const bool user_defined = neighbor.is_user_defined();
+    if (user_defined)
+    {
+      validate_selected_move = true;
+      if (m_op_size > m_op_var_idxs.size() ||
+          m_op_size > m_op_var_deltas.size())
+      {
+        throw Solver_Error(
+            "neighbor callback returned inconsistent operation arrays");
+      }
+    }
+    else
+      assert(m_op_size <= m_op_var_idxs.size() &&
+             m_op_size <= m_op_var_deltas.size());
+    for (size_t op_idx = 0; op_idx < m_op_size; ++op_idx)
+    {
+      if (user_defined && m_op_var_idxs[op_idx] >= m_var_num)
+      {
+        throw Solver_Error(
+            "neighbor callback variable index is out of range: " +
+            std::to_string(m_op_var_idxs[op_idx]));
+      }
+      m_scoring.score_neighbor(
+          m_scoring_ctx, m_op_var_idxs[op_idx], m_op_var_deltas[op_idx]);
+    }
+    if (m_best_neighbor_score > 0)
+      break;
+  }
+  return validate_selected_move;
+}
+
+// 论文 3.5：模式 m 下动作 a 的即时收益
+//   reward_m(a) = (|violated(s-)| - |violated(s+)|) / |violated(s-)|
+inline double Local_Search::calculate_reward(double p_pre_unsat,
+                                             double p_cur_unsat) const
+{
+  if (p_pre_unsat <= 0.0)
+    return 0.0;
+  return (p_pre_unsat - p_cur_unsat) / p_pre_unsat;
+}
+
+// 论文 3.5：Value_m(a) <- (1-α)·Value_m(a) + α·reward_m(a)（按模式独立更新）；
+// 同时在线维护该模式下动作的奖励均值与方差，供论文 3.7 的方差机制使用。
+inline void Local_Search::update_q_table(double reward, size_t con_idx)
+{
+  size_t mode = m_neighbor_ctx.state; // 0=AGR, 1=FINE
+  double& value = m_neighbor_ctx.ConQTable[con_idx][mode];
+  value = (1.0 - m_neighbor_ctx.alpha) * value +
+          m_neighbor_ctx.alpha * reward;
+
+  m_neighbor_ctx.PickCon[con_idx][mode]++;
+  m_neighbor_ctx.PickConTime[mode]++;
+  size_t n = m_neighbor_ctx.PickCon[con_idx][mode];
+  double& mean = m_neighbor_ctx.aConReward[con_idx][mode];
+  double& var = m_neighbor_ctx.dConReward[con_idx][mode];
+  if (n == 1)
+  {
+    mean = reward;
+    var = 0.0;
+  }
+  else
+  {
+    double old_mean = mean;
+    double new_mean =
+        old_mean + (reward - old_mean) / static_cast<double>(n);
+    var = ((static_cast<double>(n) - 2.0) * var +
+           (reward - old_mean) * (reward - new_mean)) /
+          static_cast<double>(n - 1);
+    mean = new_mean;
+  }
+}
+
+inline void Local_Search::update_reward(double PreUnSat)
+{
+  if (m_neighbor_ctx.Pick_con_idx == SIZE_MAX)
+    return;
+  const size_t con_idx = m_neighbor_ctx.Pick_con_idx;
+  m_neighbor_ctx.Pick_con_idx = SIZE_MAX;
+
+  // 论文 3.5：奖励只归因于所选约束 con_t 的 mtm 移动；若最终命中的是 bm
+  // （目标函数突破）候选，与 con_t 无关，则丢弃本次奖励归属，不更新动作价值。
+  bool is_mtm = false;
+  const auto& mtm_vars = m_neighbor_ctx.mtm_var_idxs;
+  const auto& mtm_deltas = m_neighbor_ctx.mtm_var_deltas;
+  for (size_t i = 0; i < mtm_vars.size(); ++i)
+  {
+    if (mtm_vars[i] == m_best_var_idx && mtm_deltas[i] == m_best_delta)
+    {
+      is_mtm = true;
+      break;
+    }
+  }
+  if (!is_mtm)
+    return;
+
+  double reward = calculate_reward(
+      PreUnSat, static_cast<double>(m_con_unsat_idxs.size()));
+  update_q_table(reward, con_idx);
+}
+
+inline void Local_Search::update_state()
+{
+  size_t unsat = m_con_unsat_idxs.size();
+  if (unsat == 0)
+  {
+    // 可行阶段不进行约束平衡 bandit，占位为 FINE。
+    m_neighbor_ctx.state = 1;
+    return;
+  }
+  // 论文 3.2：按违反比例 ρ = |violated_set| / m 划分 AGR/FINE。
+  //  m 为约束总数，τ 为比例阈值（默认 1/100）。
+  //  AGR：ρ >= τ（m > 100），或 |violated_set| > 1（m <= 100）；
+  //  FINE：ρ < τ（m > 100），或 |violated_set| = 1（m <= 100）。
+  const size_t m = m_model_manager->con_num() - 1; // 约束总数（不含第 0 行目标函数）
+  const double tau = m_model_manager->agr_threshold();
+  const bool aggressive =
+      (m > 100)
+          ? (static_cast<double>(unsat) / static_cast<double>(m) >= tau)
+          : (unsat > 1);
+  m_neighbor_ctx.state = aggressive ? 0 : 1;
+}

@@ -1,0 +1,389 @@
+/*=====================================================================================
+
+    Filename:     Model_API.cpp
+
+    Description:  Modeling API for Local-MIP - Implementation
+        Version:  2.0
+
+    Author:       Peng Lin, peng.lin.csor@gmail.com
+
+    Organization: Shaowei Cai Group
+
+=====================================================================================*/
+
+#include "../model_data/Model_Manager.h"
+#include "../model_data/Prepared_Model.h"
+#include "../utils/global_defs.h"
+#include "../utils/solver_error.h"
+#include "Model_API.h"
+#include <cmath>
+#include <cstdio>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+Model_API::Model_API() : m_sense(Sense::minimize), m_obj_offset(0.0)
+{
+}
+
+void Model_API::set_sense(Sense p_sense)
+{
+  m_sense = p_sense;
+}
+
+bool Model_API::set_obj_offset(double p_offset)
+{
+  m_obj_offset = p_offset;
+  return true;
+}
+
+int Model_API::add_var(const std::string& p_name,
+                       double p_lb,
+                       double p_ub,
+                       double p_cost,
+                       Var_Type p_type)
+{
+  if (p_name.empty())
+  {
+    fprintf(stderr, "Error: Variable name cannot be empty\n");
+    return -1;
+  }
+  if (m_var_name_to_idx.contains(p_name))
+  {
+    fprintf(
+        stderr, "Error: Variable '%s' already exists\n", p_name.c_str());
+    return -1;
+  }
+  if (p_lb > p_ub)
+  {
+    fprintf(stderr,
+            "Error: Variable '%s' has lower bound > upper bound\n",
+            p_name.c_str());
+    return -1;
+  }
+  int var_idx = static_cast<int>(m_vars.size());
+  m_var_name_to_idx[p_name] = var_idx;
+  m_vars.push_back({p_name, p_lb, p_ub, p_cost, p_type});
+  return var_idx;
+}
+
+bool Model_API::set_cost(int p_col, double p_cost)
+{
+  if (!is_valid_var_idx(p_col))
+  {
+    fprintf(stderr, "Error: Invalid variable index %d\n", p_col);
+    return false;
+  }
+  m_vars[static_cast<size_t>(p_col)].m_cost = p_cost;
+  return true;
+}
+
+bool Model_API::set_cost(const std::string& p_name, double p_cost)
+{
+  int var_idx = get_var_idx(p_name);
+  if (var_idx < 0)
+  {
+    fprintf(stderr, "Error: Variable '%s' not found\n", p_name.c_str());
+    return false;
+  }
+  return set_cost(var_idx, p_cost);
+}
+
+int Model_API::add_con(double p_lb,
+                       double p_ub,
+                       const std::vector<int>& p_cols,
+                       const std::vector<double>& p_coefs)
+{
+  if (p_cols.size() != p_coefs.size())
+  {
+    fprintf(stderr,
+            "Error: Number of variables and coefficients do not match\n");
+    return -1;
+  }
+  for (int col : p_cols)
+  {
+    if (!is_valid_var_idx(col))
+    {
+      fprintf(
+          stderr, "Error: Invalid variable index %d in constraint\n", col);
+      return -1;
+    }
+  }
+  if (p_lb > p_ub)
+  {
+    fprintf(stderr,
+            "Error: Constraint lower bound %.15g > upper bound %.15g\n",
+            p_lb,
+            p_ub);
+    return -1;
+  }
+  int con_idx = static_cast<int>(m_cons.size());
+  m_cons.push_back({p_lb, p_ub, p_cols, p_coefs});
+  return con_idx;
+}
+
+int Model_API::add_con(double p_lb,
+                       double p_ub,
+                       const std::vector<std::string>& p_names,
+                       const std::vector<double>& p_coefs)
+{
+  if (p_names.size() != p_coefs.size())
+  {
+    fprintf(stderr,
+            "Error: Number of variables and coefficients do not match\n");
+    return -1;
+  }
+  std::vector<int> var_indices;
+  var_indices.reserve(p_names.size());
+  for (const auto& name : p_names)
+  {
+    int var_idx = get_var_idx(name);
+    if (var_idx < 0)
+    {
+      fprintf(stderr, "Error: Variable '%s' not found\n", name.c_str());
+      return -1;
+    }
+    var_indices.push_back(var_idx);
+  }
+  return add_con(p_lb, p_ub, var_indices, p_coefs);
+}
+
+bool Model_API::add_var_to_con(int p_row, int p_col, double p_coef)
+{
+  if (!is_valid_con_idx(p_row))
+  {
+    fprintf(stderr, "Error: Invalid constraint index %d\n", p_row);
+    return false;
+  }
+  if (!is_valid_var_idx(p_col))
+  {
+    fprintf(stderr, "Error: Invalid variable index %d\n", p_col);
+    return false;
+  }
+  ConData& con = m_cons[static_cast<size_t>(p_row)];
+  con.m_var_indices.push_back(p_col);
+  con.m_coefs.push_back(p_coef);
+  return true;
+}
+
+bool Model_API::add_var_to_con(int p_row,
+                               const std::string& p_name,
+                               double p_coef)
+{
+  int var_idx = get_var_idx(p_name);
+  if (var_idx < 0)
+  {
+    fprintf(stderr, "Error: Variable '%s' not found\n", p_name.c_str());
+    return false;
+  }
+  return add_var_to_con(p_row, var_idx, p_coef);
+}
+
+bool Model_API::set_integrality(int p_col, Var_Type p_type)
+{
+  if (!is_valid_var_idx(p_col))
+  {
+    fprintf(stderr, "Error: Invalid variable index %d\n", p_col);
+    return false;
+  }
+  m_vars[static_cast<size_t>(p_col)].m_type = p_type;
+  return true;
+}
+
+bool Model_API::set_integrality(const std::string& p_name, Var_Type p_type)
+{
+  int var_idx = get_var_idx(p_name);
+  if (var_idx < 0)
+  {
+    fprintf(stderr, "Error: Variable '%s' not found\n", p_name.c_str());
+    return false;
+  }
+  return set_integrality(var_idx, p_type);
+}
+
+int Model_API::get_var_idx(const std::string& p_name) const
+{
+  auto it = m_var_name_to_idx.find(p_name);
+  if (it == m_var_name_to_idx.end())
+    return -1;
+  return it->second;
+}
+
+bool Model_API::is_valid_var_idx(int p_idx) const
+{
+  return p_idx >= 0 && static_cast<size_t>(p_idx) < m_vars.size();
+}
+
+bool Model_API::is_valid_con_idx(int p_idx) const
+{
+  return p_idx >= 0 && static_cast<size_t>(p_idx) < m_cons.size();
+}
+
+void Model_API::inner_add_vars_to_cons(
+    const ConData& con,
+    size_t con_idx,
+    Model_Manager& p_model_manager,
+    const std::vector<size_t>& api_to_mgr_idx) const
+{
+  for (size_t j = 0; j < con.m_var_indices.size(); ++j)
+  {
+    const int api_idx = con.m_var_indices[j];
+    const double coef = con.m_coefs[j];
+    if (is_effectively_zero(coef, p_model_manager.zero_tolerance()))
+      continue;
+    const size_t mgr_idx = api_to_mgr_idx[static_cast<size_t>(api_idx)];
+    p_model_manager.add_term(con_idx, mgr_idx, coef);
+  }
+}
+
+void Model_API::populate_model(Model_Manager& p_model_manager) const
+{
+  printf("Building model with %zu variables and %zu constraints...\n",
+         m_vars.size(),
+         m_cons.size());
+  if (m_sense == Sense::maximize)
+    p_model_manager.setup_max();
+  if (m_obj_offset != 0.0)
+    p_model_manager.add_obj_offset(m_obj_offset);
+  size_t obj_idx = p_model_manager.make_con("");
+  p_model_manager.set_obj_name("obj");
+  std::vector<size_t> api_to_mgr_idx(m_vars.size());
+  for (size_t i = 0; i < m_vars.size(); ++i)
+  {
+    const auto& var = m_vars[i];
+    bool is_integer = (var.m_type == Var_Type::binary ||
+                       var.m_type == Var_Type::general_integer);
+    size_t var_idx = p_model_manager.make_var(var.m_name, is_integer);
+    api_to_mgr_idx[i] = var_idx;
+    auto& model_var = p_model_manager.var(var_idx);
+    const double lower_bound =
+        var.m_lb <= k_neg_inf ? k_neg_inf : var.m_lb;
+    const double upper_bound = var.m_ub >= k_inf ? k_inf : var.m_ub;
+    p_model_manager.set_var_lower_bound(model_var, lower_bound);
+    p_model_manager.set_var_upper_bound(model_var, upper_bound);
+    p_model_manager.set_var_type(model_var, var.m_type);
+    if (std::fabs(var.m_cost) > p_model_manager.zero_tolerance())
+    {
+      p_model_manager.add_term(obj_idx, var_idx, var.m_cost);
+    }
+  }
+  for (size_t i = 0; i < m_cons.size(); ++i)
+  {
+    const auto& con = m_cons[i];
+    if (con.m_var_indices.empty())
+      throw Solver_Error(
+          "Model_API::prepare: empty constraints are not supported");
+    std::string con_name = "__api_c" + std::to_string(i);
+    bool lb_is_inf = (con.m_lb <= k_neg_inf);
+    bool ub_is_inf = (con.m_ub >= k_inf);
+    if (is_effectively_zero(con.m_lb - con.m_ub,
+                            p_model_manager.feas_tolerance()) &&
+        !lb_is_inf && !ub_is_inf)
+    {
+      size_t con_idx = p_model_manager.make_con(con_name, '=');
+      auto& model_con = p_model_manager.con(con_idx);
+      model_con.set_rhs(con.m_ub);
+      inner_add_vars_to_cons(
+          con, con_idx, p_model_manager, api_to_mgr_idx);
+    }
+    else
+    {
+      bool has_constraint = false;
+      if (!ub_is_inf)
+      {
+        has_constraint = true;
+        size_t con_idx = p_model_manager.make_con(con_name + "_ub", '<');
+        auto& model_con = p_model_manager.con(con_idx);
+        model_con.set_rhs(con.m_ub);
+        inner_add_vars_to_cons(
+            con, con_idx, p_model_manager, api_to_mgr_idx);
+      }
+      if (!lb_is_inf)
+      {
+        has_constraint = true;
+        size_t con_idx = p_model_manager.make_con(con_name + "_lb", '>');
+        auto& model_con = p_model_manager.con(con_idx);
+        model_con.set_rhs(con.m_lb);
+        inner_add_vars_to_cons(
+            con, con_idx, p_model_manager, api_to_mgr_idx);
+      }
+      if (!has_constraint)
+        fprintf(stderr,
+                "Warning: Constraint %zu has both bounds infinite, "
+                "skipping...\n",
+                i);
+    }
+  }
+  printf("Model built successfully.\n");
+}
+
+void Model_API::validate_for_prepare() const
+{
+  if (m_vars.empty())
+    throw std::invalid_argument(
+        "model must contain at least one variable");
+  if (m_sense != Sense::minimize && m_sense != Sense::maximize)
+    throw std::invalid_argument("model has an invalid objective sense");
+  if (!std::isfinite(m_obj_offset))
+    throw std::invalid_argument("objective offset must be finite");
+
+  for (const auto& var : m_vars)
+  {
+    if (std::isnan(var.m_lb) || std::isnan(var.m_ub) ||
+        var.m_lb > var.m_ub)
+    {
+      throw std::invalid_argument("variable '" + var.m_name +
+                                  "' has invalid bounds");
+    }
+    if (!std::isfinite(var.m_cost))
+    {
+      throw std::invalid_argument(
+          "variable '" + var.m_name +
+          "' has a non-finite objective coefficient");
+    }
+    if (var.m_type != Var_Type::binary &&
+        var.m_type != Var_Type::general_integer &&
+        var.m_type != Var_Type::real && var.m_type != Var_Type::fixed)
+    {
+      throw std::invalid_argument("variable '" + var.m_name +
+                                  "' has an invalid type");
+    }
+  }
+
+  for (size_t con_idx = 0; con_idx < m_cons.size(); ++con_idx)
+  {
+    const auto& con = m_cons[con_idx];
+    if (std::isnan(con.m_lb) || std::isnan(con.m_ub) ||
+        con.m_lb > con.m_ub)
+    {
+      throw std::invalid_argument("constraint " + std::to_string(con_idx) +
+                                  " has invalid bounds");
+    }
+    for (double coeff : con.m_coefs)
+    {
+      if (!std::isfinite(coeff))
+      {
+        throw std::invalid_argument("constraint " +
+                                    std::to_string(con_idx) +
+                                    " has a non-finite coefficient");
+      }
+    }
+  }
+}
+
+std::shared_ptr<const Prepared_Model>
+Model_API::prepare(const Model_Prepare_Options& p_options) const
+{
+  Prepared_Model::validate_options(p_options);
+  validate_for_prepare();
+  auto manager = std::make_unique<Model_Manager>(p_options.feas_tolerance,
+                                                 p_options.zero_tolerance);
+  manager->set_bound_strengthen(p_options.bound_strengthen);
+  manager->set_split_eq(p_options.split_eq);
+  populate_model(*manager);
+  if (!manager->process_after_read())
+    throw Solver_Error("model is infeasible during preparation");
+
+  return std::shared_ptr<const Prepared_Model>(
+      new Prepared_Model(std::move(manager)));
+}
